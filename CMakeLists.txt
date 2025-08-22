@@ -32,6 +32,14 @@ add_library(llama_core
     src/llama-sampling.cpp
     src/unicode.cpp
     src/unicode-data.cpp
+    src/diffusion/sd_loader.cpp
+    src/diffusion/sd_text.cpp
+    src/diffusion/sd_unet.cpp
+    src/diffusion/sd_vae.cpp
+    src/diffusion/sd_scheduler.cpp
+    src/diffusion/sd_tokenizer.cpp
+    src/diffusion/sd_profile.cpp
+    src/diffusion/image_io.cpp
 )
 
 target_include_directories(llama_core PUBLIC
@@ -60,3 +68,7 @@ target_include_directories(common_utils PUBLIC
 )
 
 target_link_libraries(common_utils PUBLIC llama_core)
+
+add_executable(diffuse examples/diffusion/diffuse.cpp)
+target_include_directories(diffuse PUBLIC include src ggml/include)
+target_link_libraries(diffuse PUBLIC llama_core)

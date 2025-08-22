@@ -1,0 +1,86 @@
+{
+  "model_dir": "/home/beed1089/save_out/models/sdxl",
+  "text_path": "/home/beed1089/save_out/models/sdxl/text_encoder.gguf",
+  "unet_path": "/home/beed1089/save_out/models/sdxl/unet.gguf",
+  "vae_path": "/home/beed1089/save_out/models/sdxl/vae.gguf",
+  "text_hidden_size": 768,
+  "text_num_layers": 12,
+  "text_num_heads": 12,
+  "text_max_pos": 77,
+  "text_layer_norm_eps": 9.999999747378752e-06,
+  "text_bos_id": null,
+  "text_eos_id": null,
+  "text_unk_id": null,
+  "text_pad_id": null,
+  "text_sep_id": null,
+  "text_mask_id": null,
+  "unet_in_channels": 4,
+  "unet_out_channels": 4,
+  "unet_sample_size": 128,
+  "unet_cross_attention_dim": 2048,
+  "unet_block_out_channels": [
+    320,
+    640,
+    1280
+  ],
+  "unet_attention_head_dim": [
+    5,
+    10,
+    20
+  ],
+  "unet_down_block_types": [
+    "DownBlock2D",
+    "CrossAttnDownBlock2D",
+    "CrossAttnDownBlock2D"
+  ],
+  "unet_up_block_types": [
+    "CrossAttnUpBlock2D",
+    "CrossAttnUpBlock2D",
+    "UpBlock2D"
+  ],
+  "unet_layers_per_block": 2,
+  "unet_mid_block_type": "UNetMidBlock2DCrossAttn",
+  "unet_time_embedding_type": "positional",
+  "unet_resnet_time_scale_shift": "default",
+  "sched_prediction_type": "epsilon",
+  "sched_num_train_timesteps": 1000,
+  "sched_beta_start": 0.0008500000112690032,
+  "sched_beta_end": 0.012000000104308128,
+  "sched_beta_schedule": "scaled_linear",
+  "sched_timestep_spacing": "leading",
+  "vae_in_channels": 3,
+  "vae_out_channels": 3,
+  "vae_sample_size": 1024,
+  "vae_latent_channels": 4,
+  "vae_scaling_factor": 0.1302500069141388,
+  "vae_block_out_channels": [
+    128,
+    256,
+    512,
+    512
+  ],
+  "vae_down_block_types": [
+    "DownEncoderBlock2D",
+    "DownEncoderBlock2D",
+    "DownEncoderBlock2D",
+    "DownEncoderBlock2D"
+  ],
+  "vae_up_block_types": [
+    "UpDecoderBlock2D",
+    "UpDecoderBlock2D",
+    "UpDecoderBlock2D",
+    "UpDecoderBlock2D"
+  ],
+  "text2_path": "/home/beed1089/save_out/models/sdxl/text_encoder2.gguf",
+  "text2_hidden_size": 1280,
+  "text2_num_layers": 32,
+  "text2_num_heads": 20,
+  "text2_max_pos": 77,
+  "text2_layer_norm_eps": 9.999999747378752e-06,
+  "text2_bos_id": null,
+  "text2_eos_id": null,
+  "text2_unk_id": null,
+  "text2_pad_id": null,
+  "text2_sep_id": null,
+  "text2_mask_id": null
+}

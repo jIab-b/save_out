@@ -291,6 +291,8 @@ def main():
                 pass
         for tn, tv in tensors.items():
             np_arr = tv.detach().cpu().numpy()
+            if np_arr.dtype == np.float32 or np_arr.dtype == np.float64:
+                np_arr = np_arr.astype(np.float16)
             writer.add_tensor(tn, np_arr)
         writer.write_header_to_file()
         writer.write_kv_data_to_file()
