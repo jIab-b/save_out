@@ -80,11 +80,9 @@ void DiffusionScheduler::set_num_inference_steps(int n) {
 }
 
 ggml_tensor * DiffusionScheduler::step(ggml_context * ctx, ggml_tensor * latents, ggml_tensor * noise_pred, int /*step_index*/) const {
-    ggml_tensor * scaled = ggml_sub(ctx, latents, noise_pred);
-    ggml_cgraph * gf = ggml_new_graph(ctx);
-    ggml_build_forward_expand(gf, scaled);
-    ggml_graph_compute_with_ctx(ctx, gf, 1);
-    return scaled;
+    // Return node; caller schedules compute via allocator
+    ggml_tensor * out = ggml_sub(ctx, latents, noise_pred);
+    return out;
 }
 
 }

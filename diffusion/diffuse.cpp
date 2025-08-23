@@ -1,5 +1,7 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -104,97 +106,30 @@ namespace sd {
     bool write_png(const std::string & path, int w, int h, const std::vector<unsigned char> & rgb);
 }
 
-static ggml_tensor * encode_text_ctx(ggml_context * ctx, const sd::SDXLProfile & prof, const std::string & prompt) {
+static ggml_tensor * build_text_ctx(ggml_context * ctx_build, const sd::SDXLProfile & prof, const std::string & prompt) {
     TextEncoder text = TextEncoder::from_file(prof.text_path);
     Tokenizer tok = Tokenizer::from_text_model(text.model());
     std::vector<int32_t> ids_vec = tok.encode(prompt, true);
-    ggml_tensor * token_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, ids_vec.size());
-    int32_t * ids = (int32_t *) token_ids->data;
-    for (size_t i = 0; i < ids_vec.size(); ++i) ids[i] = ids_vec[i];
-    ggml_tensor * emb1_dev = text.forward(ctx, token_ids);
-    ggml_tensor * emb1 = ggml_new_tensor_2d(ctx, emb1_dev->type, emb1_dev->ne[0], emb1_dev->ne[1]);
-    std::memcpy(emb1->data, emb1_dev->data, ggml_nbytes(emb1_dev));
-
-    std::filesystem::path p2 = std::filesystem::path(prof.dir) / "text_encoder2.gguf";
-    if (std::filesystem::exists(p2)) {
-        TextEncoder t2 = TextEncoder::from_file(p2.string());
-        Tokenizer tk2 = Tokenizer::from_text_model(t2.model());
-        std::vector<int32_t> ids2 = tk2.encode(prompt, true);
-        ggml_tensor * token_ids2 = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, ids2.size());
-        int32_t * id2 = (int32_t *) token_ids2->data;
-        for (size_t i = 0; i < ids2.size(); ++i) id2[i] = ids2[i];
-        ggml_tensor * emb2_dev = t2.forward(ctx, token_ids2);
-        return emb1; // minimal: drop second encoder to avoid concat
-    }
-    return emb1;
+    ggml_tensor * token_ids = ggml_new_tensor_1d(ctx_build, GGML_TYPE_I32, ids_vec.size());
+    // caller fills token_ids after allocation
+    (void)ids_vec;
+    return text.forward(ctx_build, token_ids);
 }
 
-static ggml_tensor * denoise_latents(ggml_context * ctx, const std::string & unet_path, ggml_tensor * latents, ggml_tensor * text_ctx, int steps) {
-    UNet unet = UNet::from_file(unet_path);
-    DiffusionScheduler sched = DiffusionScheduler::from_model_kv(unet.model());
-    sched.set_num_inference_steps(steps);
-    for (int s = 0; s < steps; ++s) {
-        ggml_tensor * tstep = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
-        ((int32_t *) tstep->data)[0] = s;
-        ggml_tensor * noise_pred_dev = unet.predict_noise(ctx, latents, tstep, text_ctx);
-        ggml_tensor * noise_pred = ggml_new_tensor_4d(ctx, noise_pred_dev->type, noise_pred_dev->ne[0], noise_pred_dev->ne[1], noise_pred_dev->ne[2], noise_pred_dev->ne[3]);
-        std::memcpy(noise_pred->data, noise_pred_dev->data, ggml_nbytes(noise_pred_dev));
-        latents = sched.step(ctx, latents, noise_pred, s);
-    }
-    return latents;
+static ggml_tensor * build_unet_step(ggml_context * ctx_build, const UNet & unet, const DiffusionScheduler & sched,
+                                     ggml_tensor * latents_in, ggml_tensor * text_ctx, int step_index) {
+    ggml_tensor * tstep = ggml_new_tensor_1d(ctx_build, GGML_TYPE_I32, 1);
+    ggml_tensor * noise_pred = unet.predict_noise(ctx_build, latents_in, tstep, text_ctx);
+    ggml_tensor * latents_next = sched.step(ctx_build, latents_in, noise_pred, step_index);
+    return latents_next;
 }
 
-static ggml_tensor * decode_latents_to_image(ggml_context * ctx, const std::string & vae_path, ggml_tensor * latents) {
-    VAE vae = VAE::from_file(vae_path);
-    float scale = vae.config().scaling_factor > 0 ? vae.config().scaling_factor : 1.0f;
-    {
-        float * d = (float *) latents->data;
-        const int C = latents->ne[0];
-        const int W = latents->ne[1];
-        const int H = latents->ne[2];
-        const size_t n = (size_t)C * W * H;
-        for (size_t i = 0; i < n; ++i) d[i] = d[i] / scale;
-    }
-    ggml_tensor * img_dev = vae.decode(ctx, latents);
-    ggml_tensor * img = ggml_new_tensor_4d(ctx, img_dev->type, img_dev->ne[0], img_dev->ne[1], img_dev->ne[2], img_dev->ne[3]);
-    std::memcpy(img->data, img_dev->data, ggml_nbytes(img_dev));
+static ggml_tensor * build_decode_image(ggml_context * ctx_build, const VAE & vae, ggml_tensor * latents_in) {
+    ggml_tensor * img = vae.decode(ctx_build, latents_in);
     return img;
 }
 
-static size_t plan_required_mem(const sd::SDXLProfile & prof, const std::string & prompt) {
-    size_t big = 4ull * 1024ull * 1024ull * 1024ull;
-    ggml_init_params ip;
-    ip.mem_size = big;
-    ip.mem_buffer = nullptr;
-    ip.no_alloc = false;
-    ggml_context * tmp = ggml_init(ip);
-    if (!tmp) return 2ull * 1024ull * 1024ull * 1024ull;
-
-    ggml_tensor * text_ctx = encode_text_ctx(tmp, prof, prompt);
-
-    const int H = 64, W = 64, C = 4;
-    ggml_tensor * latents = ggml_new_tensor_4d(tmp, GGML_TYPE_F32, C, W, H, 1);
-
-    UNet unet = UNet::from_file(prof.unet_path);
-    ggml_tensor * tstep = ggml_new_tensor_1d(tmp, GGML_TYPE_I32, 1);
-    ((int32_t *) tstep->data)[0] = 0;
-    ggml_tensor * noise = unet.predict_noise(tmp, latents, tstep, text_ctx);
-
-    VAE vae = VAE::from_file(prof.vae_path);
-    ggml_tensor * img = vae.decode(tmp, latents);
-
-    ggml_cgraph * g = ggml_new_graph(tmp);
-    ggml_build_forward_expand(g, img);
-    ggml_graph_compute_with_ctx(tmp, g, 1);
-
-    size_t used = ggml_used_mem(tmp);
-    ggml_free(tmp);
-
-    size_t margin = 256ull * 1024ull * 1024ull;
-    size_t align = 64ull * 1024ull * 1024ull;
-    size_t need = used + margin;
-    return ((need + align - 1) / align) * align;
-}
+// With ggml_gallocr, we rely on allocator growing as needed, so no global plan is needed.
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
@@ -222,36 +157,92 @@ int main(int argc, char ** argv) {
     const std::string unet_path = prof.unet_path;
     const std::string vae_path  = prof.vae_path;
 
-    // Estimate memory requirements based on model parameters
-    size_t est = estimate_memory_requirements(prof);
-    size_t planned = plan_required_mem(prof, prompt);
-    size_t mem_size = std::max(est, planned);
-    std::printf("Allocating %zu MB of memory for GGML context\n", mem_size / (1024 * 1024));
-    
-    ggml_init_params ip;
-    ip.mem_size   = mem_size;
-    ip.mem_buffer = nullptr;
-    ip.no_alloc   = false;
-    ggml_context * ctx = ggml_init(ip);
+    // Build/eval contexts and allocator
+    ggml_init_params ip_build { 0, nullptr, true };
+    ggml_context * ctx_build = ggml_init(ip_build);
+    ggml_init_params ip_persist { 16ull*1024*1024, nullptr, false };
+    ggml_context * ctx_persist = ggml_init(ip_persist);
+    if (!ctx_build || !ctx_persist) { std::fprintf(stderr, "ctx init failed\n"); return 1; }
+    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_cpu_buffer_type());
 
-    ggml_tensor * text_ctx = encode_text_ctx(ctx, prof, prompt);
+    // Load models
+    TextEncoder text = TextEncoder::from_file(text_path);
+    UNet unet = UNet::from_file(unet_path);
+    VAE vae = VAE::from_file(vae_path);
+    DiffusionScheduler sched = DiffusionScheduler::from_model_kv(unet.model());
+    sched.set_num_inference_steps(steps);
 
+    // Build + compute text context, then persist
+    ggml_tensor * text_ids = nullptr;
+    ggml_tensor * text_node = nullptr;
+    {
+        Tokenizer tok = Tokenizer::from_text_model(text.model());
+        std::vector<int32_t> ids_vec = tok.encode(prompt, true);
+        text_ids = ggml_new_tensor_1d(ctx_build, GGML_TYPE_I32, ids_vec.size());
+        text_node = text.forward(ctx_build, text_ids);
+        ggml_set_output(text_node);
+        ggml_cgraph * gf = ggml_new_graph(ctx_build);
+        ggml_build_forward_expand(gf, text_node);
+        ggml_gallocr_alloc_graph(galloc, gf);
+        // fill ids
+        int32_t * ids = (int32_t *) text_ids->data;
+        for (size_t i = 0; i < ids_vec.size(); ++i) ids[i] = ids_vec[i];
+        ggml_graph_compute_with_ctx(ctx_build, gf, 1);
+    }
+    ggml_tensor * text_ctx_buf = ggml_dup_tensor(ctx_persist, text_node);
+    std::memcpy(text_ctx_buf->data, text_node->data, ggml_nbytes(text_node));
+    // reset build context
+    ggml_free(ctx_build);
+    ctx_build = ggml_init(ip_build);
+
+    // Latents buffer in persistent ctx
     const int H = 64, W = 64, C = 4;
-    ggml_tensor * latents = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, C, W, H, 1);
+    ggml_tensor * latents_buf = ggml_new_tensor_4d(ctx_persist, GGML_TYPE_F32, C, W, H, 1);
     {
         std::mt19937 rng(1234);
         std::normal_distribution<float> nd(0.0f, 1.0f);
-        float * d = (float *) latents->data;
+        float * d = (float *) latents_buf->data;
         const size_t n = (size_t)C*W*H;
         for (size_t i = 0; i < n; ++i) d[i] = nd(rng);
     }
-    latents = denoise_latents(ctx, unet_path, latents, text_ctx, steps);
-    ggml_tensor * image = decode_latents_to_image(ctx, vae_path, latents);
-    const int Cout = (int)image->ne[0];
-    const int Wout = (int)image->ne[1];
-    const int Hout = (int)image->ne[2];
+
+    // Denoising steps
+    for (int s = 0; s < steps; ++s) {
+        ggml_tensor * lat_in = ggml_new_tensor_4d(ctx_build, GGML_TYPE_F32, C, W, H, 1);
+        ggml_set_input(lat_in);
+        ggml_tensor * txt_in = ggml_new_tensor_2d(ctx_build, text_ctx_buf->type, text_ctx_buf->ne[0], text_ctx_buf->ne[1]);
+        ggml_tensor * lat_next = build_unet_step(ctx_build, unet, sched, lat_in, txt_in, s);
+        ggml_set_output(lat_next);
+        ggml_cgraph * gf = ggml_new_graph(ctx_build);
+        ggml_build_forward_expand(gf, lat_next);
+        ggml_gallocr_alloc_graph(galloc, gf);
+        std::memcpy(lat_in->data, latents_buf->data, ggml_nbytes(latents_buf));
+        std::memcpy(txt_in->data, text_ctx_buf->data, ggml_nbytes(text_ctx_buf));
+        ggml_graph_compute_with_ctx(ctx_build, gf, 1);
+        std::memcpy(latents_buf->data, lat_next->data, ggml_nbytes(latents_buf));
+        ggml_free(ctx_build);
+        ctx_build = ggml_init(ip_build);
+    }
+
+    // Decode
+    ggml_tensor * img_node = nullptr;
+    {
+        ggml_tensor * lat_in = ggml_new_tensor_4d(ctx_build, GGML_TYPE_F32, C, W, H, 1);
+        float scale = vae.config().scaling_factor > 0 ? vae.config().scaling_factor : 1.0f;
+        ggml_tensor * lat_scaled = ggml_scale(ctx_build, lat_in, 1.0f / scale);
+        img_node = build_decode_image(ctx_build, vae, lat_scaled);
+        ggml_set_output(img_node);
+        ggml_cgraph * gf = ggml_new_graph(ctx_build);
+        ggml_build_forward_expand(gf, img_node);
+        ggml_gallocr_alloc_graph(galloc, gf);
+        std::memcpy(lat_in->data, latents_buf->data, ggml_nbytes(latents_buf));
+        ggml_graph_compute_with_ctx(ctx_build, gf, 1);
+    }
+    const int Cout = (int)img_node->ne[0];
+    const int Wout = (int)img_node->ne[1];
+    const int Hout = (int)img_node->ne[2];
     std::vector<unsigned char> rgb((size_t)Wout * Hout * 3);
-    float * im = (float *) image->data;
+    float * im = (float *) img_node->data;
     for (int y = 0; y < Hout; ++y) {
         for (int x = 0; x < Wout; ++x) {
             for (int c = 0; c < 3; ++c) {
@@ -265,9 +256,9 @@ int main(int argc, char ** argv) {
     }
     sd::write_png(out_file, Wout, Hout, rgb);
 
-    std::printf("ok: text_ctx=(%d,%d) latents=%d image=%d\n",
-        (int)text_ctx->ne[1], (int)text_ctx->ne[0], (int)latents->ne[0], (int)image->ne[0]);
-
-    ggml_free(ctx);
+    std::printf("ok: text_ctx persisted, latents shape=(%d,%d,%d)\n", C, W, H);
+    ggml_gallocr_free(galloc);
+    ggml_free(ctx_build);
+    ggml_free(ctx_persist);
     return 0;
 }

@@ -64,7 +64,7 @@ ggml_tensor * UNet::predict_noise(ggml_context * ctx,
     auto w_out_it = m.tensors.find("conv_out.weight");
     auto b_out_it = m.tensors.find("conv_out.bias");
     if (w_in_it == m.tensors.end() || b_in_it == m.tensors.end() || w_out_it == m.tensors.end() || b_out_it == m.tensors.end()) {
-        return ggml_dup_tensor(ctx, latents);
+        return latents;
     }
 
     ggml_tensor * w_in_src  = w_in_it->second;
@@ -72,27 +72,12 @@ ggml_tensor * UNet::predict_noise(ggml_context * ctx,
     ggml_tensor * w_out_src = w_out_it->second;
     ggml_tensor * b_out_src = b_out_it->second;
 
-    ggml_tensor * w_in  = ggml_dup_tensor(ctx, w_in_src);
-    ggml_tensor * b_in  = ggml_dup_tensor(ctx, b_in_src);
-    ggml_tensor * w_out = ggml_dup_tensor(ctx, w_out_src);
-    ggml_tensor * b_out = ggml_dup_tensor(ctx, b_out_src);
-    std::memcpy(w_in->data,  w_in_src->data,  ggml_nbytes(w_in_src));
-    std::memcpy(b_in->data,  b_in_src->data,  ggml_nbytes(b_in_src));
-    std::memcpy(w_out->data, w_out_src->data, ggml_nbytes(w_out_src));
-    std::memcpy(b_out->data, b_out_src->data, ggml_nbytes(b_out_src));
+    // permute weights for convolution if required
+    ggml_tensor * k_in  = ggml_permute(ctx, w_in_src, 3, 2, 1, 0);
+    ggml_tensor * k_out = ggml_permute(ctx, w_out_src, 3, 2, 1, 0);
 
-    const int64_t ne0 = latents->ne[0];
-    const int64_t ne1 = latents->ne[1];
-    const int64_t ne2 = latents->ne[2];
-    const int64_t ne3 = latents->ne[3];
-    ggml_tensor * lat_in = ggml_new_tensor_4d(ctx, latents->type, ne0, ne1, ne2, ne3);
-    std::memcpy(lat_in->data, latents->data, ggml_nbytes(latents));
-
-    ggml_tensor * k_in  = ggml_permute(ctx, w_in, 3, 2, 1, 0);
-    ggml_tensor * k_out = ggml_permute(ctx, w_out, 3, 2, 1, 0);
-
-    ggml_tensor * cur = ggml_conv_2d_s1_ph(ctx, k_in, lat_in);
-    cur = ggml_add(ctx, cur, b_in);
+    ggml_tensor * cur = ggml_conv_2d_s1_ph(ctx, k_in, latents);
+    cur = ggml_add(ctx, cur, b_in_src);
     cur = ggml_silu(ctx, cur);
     // minimal timestep conditioning: scale features based on normalized timestep
     float scale = 1.0f;
@@ -103,11 +88,8 @@ ggml_tensor * UNet::predict_noise(ggml_context * ctx,
     }
     cur = ggml_scale(ctx, cur, scale);
     cur = ggml_conv_2d_s1_ph(ctx, k_out, cur);
-    cur = ggml_add(ctx, cur, b_out);
-
-    ggml_cgraph * gf = ggml_new_graph(ctx);
-    ggml_build_forward_expand(gf, cur);
-    ggml_graph_compute_with_ctx(ctx, gf, 1);
+    cur = ggml_add(ctx, cur, b_out_src);
+    // Do not compute here; caller manages allocation and compute
     return cur;
 }
 
