@@ -29,6 +29,10 @@ def read_text_metadata(path: Path, prefix: str) -> dict[str, Any]:
         f"{prefix}_num_heads":         get_scalar(r, f"diffusion.{prefix}.num_attention_heads"),
         f"{prefix}_max_pos":           get_scalar(r, f"diffusion.{prefix}.max_position_embeddings"),
         f"{prefix}_layer_norm_eps":    get_scalar(r, f"diffusion.{prefix}.layer_norm_eps"),
+        f"{prefix}_intermediate_size": get_scalar(r, f"diffusion.{prefix}.intermediate_size"),
+        f"{prefix}_hidden_act":        get_scalar(r, f"diffusion.{prefix}.hidden_act"),
+        f"{prefix}_vocab_size":        get_scalar(r, f"diffusion.{prefix}.vocab_size"),
+        f"{prefix}_projection_dim":    get_scalar(r, f"diffusion.{prefix}.projection_dim"),
     }
     # tokenizer ids (per-encoder)
     d[f"{prefix}_bos_id"]  = get_scalar(r, "tokenizer.ggml.bos_token_id")
@@ -57,6 +61,13 @@ def read_unet_metadata(path: Path) -> dict[str, Any]:
         "unet_mid_block_type":       get_scalar(r, "diffusion.unet.mid_block_type"),
         "unet_time_embedding_type":  get_scalar(r, "diffusion.unet.time_embedding_type"),
         "unet_resnet_time_scale_shift": get_scalar(r, "diffusion.unet.resnet_time_scale_shift"),
+        # SDXL additions and common extras
+        "unet_addition_embed_type":     get_scalar(r, "diffusion.unet.addition_embed_type"),
+        "unet_addition_time_embed_dim": get_scalar(r, "diffusion.unet.addition_time_embed_dim"),
+        "unet_time_embedding_dim":      get_scalar(r, "diffusion.unet.time_embedding_dim"),
+        "unet_time_cond_proj_dim":      get_scalar(r, "diffusion.unet.time_cond_proj_dim"),
+        "unet_class_embeddings_input_dim": get_scalar(r, "diffusion.unet.class_embeddings_input_dim"),
+        "unet_projection_class_embeddings_input_dim": get_scalar(r, "diffusion.unet.projection_class_embeddings_input_dim"),
         # scheduler (if present)
         "sched_prediction_type":     get_scalar(r, "diffusion.scheduler.prediction_type"),
         "sched_num_train_timesteps": get_scalar(r, "diffusion.scheduler.num_train_timesteps"),
@@ -64,6 +75,15 @@ def read_unet_metadata(path: Path) -> dict[str, Any]:
         "sched_beta_end":            get_scalar(r, "diffusion.scheduler.beta_end"),
         "sched_beta_schedule":       get_scalar(r, "diffusion.scheduler.beta_schedule"),
         "sched_timestep_spacing":    get_scalar(r, "diffusion.scheduler.timestep_spacing"),
+        "sched_steps_offset":        get_scalar(r, "diffusion.scheduler.steps_offset"),
+        "sched_sigma_min":           get_scalar(r, "diffusion.scheduler.sigma_min"),
+        "sched_sigma_max":           get_scalar(r, "diffusion.scheduler.sigma_max"),
+        "sched_sigma_data":          get_scalar(r, "diffusion.scheduler.sigma_data"),
+        "sched_variance_type":       get_scalar(r, "diffusion.scheduler.variance_type"),
+        "sched_use_karras_sigmas":   get_scalar(r, "diffusion.scheduler.use_karras_sigmas"),
+        "sched_rescale_betas_zero_snr": get_scalar(r, "diffusion.scheduler.rescale_betas_zero_snr"),
+        "sched_clip_sample":         get_scalar(r, "diffusion.scheduler.clip_sample"),
+        "sched_clip_sample_range":   get_scalar(r, "diffusion.scheduler.clip_sample_range"),
     }
     return d
 

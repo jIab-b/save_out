@@ -8,7 +8,7 @@ Run:
 
 import argparse
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, Dict, Any
 import json
 import numpy as np
 import torch
@@ -38,6 +38,14 @@ def _add_kv_array(writer: gguf.GGUFWriter, key: str, val) -> None:
     if isinstance(val, (list, tuple)) and len(val) > 0:
         writer.add_array(key, list(val))
 
+def _get_int(d: dict, key: str) -> int | None:
+    v = d.get(key)
+    return int(v) if isinstance(v, (int,)) else None
+
+def _get_float(d: dict, key: str) -> float | None:
+    v = d.get(key)
+    return float(v) if isinstance(v, (int, float)) else None
+
 def write_unet_metadata(writer: gguf.GGUFWriter, cfg: dict) -> None:
     p = "diffusion.unet."
     _add_kv_int(writer, p + "in_channels", cfg.get("in_channels"))
@@ -62,6 +70,14 @@ def write_unet_metadata(writer: gguf.GGUFWriter, cfg: dict) -> None:
     _add_kv_str(writer, p + "mid_block_type", cfg.get("mid_block_type"))
     _add_kv_str(writer, p + "time_embedding_type", cfg.get("time_embedding_type"))
     _add_kv_str(writer, p + "resnet_time_scale_shift", cfg.get("resnet_time_scale_shift"))
+    # SDXL-specific additions if present
+    _add_kv_str(writer, p + "addition_embed_type", cfg.get("addition_embed_type"))
+    _add_kv_int(writer, p + "addition_time_embed_dim", cfg.get("addition_time_embed_dim"))
+    _add_kv_int(writer, p + "time_embedding_dim", cfg.get("time_embedding_dim"))
+    # Common extra projection/class/time cond fields
+    _add_kv_int(writer, p + "time_cond_proj_dim", cfg.get("time_cond_proj_dim"))
+    _add_kv_int(writer, p + "class_embeddings_input_dim", cfg.get("class_embeddings_input_dim"))
+    _add_kv_int(writer, p + "projection_class_embeddings_input_dim", cfg.get("projection_class_embeddings_input_dim"))
 
 def write_vae_metadata(writer: gguf.GGUFWriter, cfg: dict) -> None:
     p = "diffusion.vae."
@@ -81,6 +97,12 @@ def write_text_metadata(writer: gguf.GGUFWriter, cfg: dict, prefix: str) -> None
     _add_kv_int(writer, p + "num_attention_heads", cfg.get("num_attention_heads"))
     _add_kv_int(writer, p + "max_position_embeddings", cfg.get("max_position_embeddings"))
     _add_kv_float(writer, p + "layer_norm_eps", cfg.get("layer_norm_eps"))
+    # Additional helpful fields
+    _add_kv_int(writer, p + "intermediate_size", cfg.get("intermediate_size"))
+    _add_kv_str(writer, p + "hidden_act", cfg.get("hidden_act"))
+    _add_kv_int(writer, p + "vocab_size", cfg.get("vocab_size"))
+    # For CLIPTextModelWithProjection
+    _add_kv_int(writer, p + "projection_dim", cfg.get("projection_dim"))
 
 def write_scheduler_metadata(writer: gguf.GGUFWriter, sched_cfg: dict) -> None:
     p = "diffusion.scheduler."
@@ -90,6 +112,16 @@ def write_scheduler_metadata(writer: gguf.GGUFWriter, sched_cfg: dict) -> None:
     _add_kv_float(writer, p + "beta_start", sched_cfg.get("beta_start"))
     _add_kv_float(writer, p + "beta_end", sched_cfg.get("beta_end"))
     _add_kv_str(writer, p + "beta_schedule", sched_cfg.get("beta_schedule"))
+    # Optional extras for various solvers
+    _add_kv_int(writer, p + "steps_offset", sched_cfg.get("steps_offset"))
+    _add_kv_float(writer, p + "sigma_min", sched_cfg.get("sigma_min"))
+    _add_kv_float(writer, p + "sigma_max", sched_cfg.get("sigma_max"))
+    _add_kv_float(writer, p + "sigma_data", sched_cfg.get("sigma_data"))
+    _add_kv_float(writer, p + "variance_type", sched_cfg.get("variance_type"))
+    _add_kv_int(writer, p + "use_karras_sigmas", sched_cfg.get("use_karras_sigmas"))
+    _add_kv_int(writer, p + "rescale_betas_zero_snr", sched_cfg.get("rescale_betas_zero_snr"))
+    _add_kv_int(writer, p + "clip_sample", sched_cfg.get("clip_sample"))
+    _add_kv_float(writer, p + "clip_sample_range", sched_cfg.get("clip_sample_range"))
 
 def find_components(pipeline_dir: Path) -> Iterable[Tuple[str, Path, list[Path]]]:
     """Return tuples (component_name, component_dir, list_of_weight_files) discovered from configs."""
@@ -197,6 +229,7 @@ def main():
             tok_json = tok_dir / "tokenizer.json"
             merges_txt = tok_dir / "merges.txt"
             vocab_txt = tok_dir / "vocab.json"
+            token_to_id: Dict[str, int] = {}
             if tok_json.exists():
                 try:
                     tj = json.loads(tok_json.read_text())
@@ -204,7 +237,9 @@ def main():
                     writer.add_tokenizer_model(model_type)
                     vocab = tj.get("model", {}).get("vocab") or {}
                     if isinstance(vocab, dict):
-                        tokens = [t for t, _ in sorted(vocab.items(), key=lambda kv: kv[1])]
+                        items = sorted(vocab.items(), key=lambda kv: kv[1])
+                        tokens = [t for t, _ in items]
+                        token_to_id = {t: i for t, i in items}
                         writer.add_token_list(tokens)
                     merges = tj.get("model", {}).get("merges")
                     if isinstance(merges, list) and merges:
@@ -215,7 +250,9 @@ def main():
                 if vocab_txt.exists():
                     try:
                         vocab = json.loads(Path(vocab_txt).read_text())
-                        tokens = [t for t, _ in sorted(vocab.items(), key=lambda kv: kv[1])]
+                        items = sorted(vocab.items(), key=lambda kv: kv[1])
+                        tokens = [t for t, _ in items]
+                        token_to_id = {t: i for t, i in items}
                         writer.add_tokenizer_model("bpe")
                         writer.add_token_list(tokens)
                     except Exception:
@@ -230,28 +267,48 @@ def main():
             if tok_cfg.exists():
                 try:
                     cfg = json.loads(tok_cfg.read_text())
-                    def get_id(obj):
+                    def resolve_id(field: str) -> int | None:
+                        obj = cfg.get(field)
+                        # Prefer explicit numeric id
+                        if isinstance(obj, dict) and isinstance(obj.get("id"), int):
+                            return int(obj["id"])
+                        # Else try by content string
+                        content = None
                         if isinstance(obj, dict):
-                            return obj.get("id")
+                            content = obj.get("content") or obj.get("piece") or obj.get("token")
+                        elif isinstance(obj, str):
+                            content = obj
+                        if isinstance(content, str) and token_to_id:
+                            return token_to_id.get(content)
                         return None
-                    v = get_id(cfg.get("bos_token"))
-                    if isinstance(v, int):
-                        writer.add_bos_token_id(v)
-                    v = get_id(cfg.get("eos_token"))
-                    if isinstance(v, int):
-                        writer.add_eos_token_id(v)
-                    v = get_id(cfg.get("unk_token"))
-                    if isinstance(v, int):
-                        writer.add_unk_token_id(v)
-                    v = get_id(cfg.get("sep_token"))
-                    if isinstance(v, int):
-                        writer.add_sep_token_id(v)
-                    v = get_id(cfg.get("pad_token"))
-                    if isinstance(v, int):
-                        writer.add_pad_token_id(v)
-                    v = get_id(cfg.get("mask_token"))
-                    if isinstance(v, int):
-                        writer.add_mask_token_id(v)
+                    v = resolve_id("bos_token");  v is not None and writer.add_bos_token_id(v)
+                    v = resolve_id("eos_token");  v is not None and writer.add_eos_token_id(v)
+                    v = resolve_id("unk_token");  v is not None and writer.add_unk_token_id(v)
+                    v = resolve_id("sep_token");  v is not None and writer.add_sep_token_id(v)
+                    v = resolve_id("pad_token");  v is not None and writer.add_pad_token_id(v)
+                    v = resolve_id("mask_token"); v is not None and writer.add_mask_token_id(v)
+                except Exception:
+                    pass
+            # Also inspect special_tokens_map.json as a fallback
+            stm = tok_dir / "special_tokens_map.json"
+            if stm.exists():
+                try:
+                    sm = json.loads(stm.read_text())
+                    def add_if(name: str, fn):
+                        obj = sm.get(name)
+                        tid = None
+                        if isinstance(obj, dict) and isinstance(obj.get("id"), int):
+                            tid = obj["id"]
+                        elif isinstance(obj, str) and token_to_id:
+                            tid = token_to_id.get(obj)
+                        if isinstance(tid, int):
+                            fn(tid)
+                    add_if("bos_token", writer.add_bos_token_id)
+                    add_if("eos_token", writer.add_eos_token_id)
+                    add_if("unk_token", writer.add_unk_token_id)
+                    add_if("sep_token", writer.add_sep_token_id)
+                    add_if("pad_token", writer.add_pad_token_id)
+                    add_if("mask_token", writer.add_mask_token_id)
                 except Exception:
                     pass
         mi = p_dir / "model_index.json"
