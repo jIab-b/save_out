@@ -119,7 +119,7 @@ def build_profile(model_dir: Path) -> dict[str, Any]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-dir", required=True, help="Directory with text_encoder(.gguf), unet.gguf, vae.gguf")
-    ap.add_argument("--out", default=None, help="Output JSON path (default: src/diffusion/sdxl.profile.json)")
+    ap.add_argument("--out", default=None, help="Output JSON path (default: diffusion/sdxl.profile.json)")
     args = ap.parse_args()
 
     model_dir = Path(args.model_dir).resolve()
@@ -134,5 +134,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

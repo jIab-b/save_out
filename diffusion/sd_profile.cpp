@@ -1,16 +1,80 @@
-#include "sd_profile.h"
-#include "sd_text.h"
-#include "sd_unet.h"
-#include "sd_vae.h"
-#include "sd_loader.h"
+#include "ggml.h"
+#include "gguf.h"
 
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
 namespace sd {
+
+struct Model {
+    ggml_context * ctx = nullptr;
+    gguf_context * uf = nullptr;
+    std::unordered_map<std::string, ggml_tensor *> tensors;
+    std::unordered_map<std::string, std::string> kv;
+};
+
+Model load(const std::string & path);
+
+struct TextEncoderConfig { int32_t hidden_size=0,num_layers=0,num_heads=0,max_position_embeddings=0; };
+class TextEncoder {
+public:
+    static TextEncoder from_file(const std::string & path);
+    ggml_tensor * build_embeddings(ggml_context * ctx, ggml_tensor * token_ids) const;
+    ggml_tensor * forward(ggml_context * ctx, ggml_tensor * token_ids) const;
+    const TextEncoderConfig & config() const { return cfg; }
+    const Model & model() const { return m; }
+private:
+    Model m; TextEncoderConfig cfg;
+};
+
+struct UNetConfig { int32_t in_channels=0,out_channels=0,sample_size=0; };
+class UNet {
+public:
+    static UNet from_file(const std::string & path);
+    ggml_tensor * predict_noise(ggml_context * ctx, ggml_tensor * latents, ggml_tensor * timestep, ggml_tensor * text_context) const;
+    const UNetConfig & config() const { return cfg; }
+    const Model & model() const { return m; }
+private: Model m; UNetConfig cfg; };
+
+struct VAEConfig { int32_t in_channels=0, latent_channels=0; float scaling_factor=0.18215f; };
+class VAE {
+public:
+    static VAE from_file(const std::string & path);
+    ggml_tensor * decode(ggml_context * ctx, ggml_tensor * latents) const;
+    const VAEConfig & config() const { return cfg; }
+    const Model & model() const { return m; }
+private: Model m; VAEConfig cfg; };
+
+struct SDXLProfile {
+    std::string dir;
+    std::string text_path;
+    std::string unet_path;
+    std::string vae_path;
+    int32_t text_hidden_size = 0;
+    int32_t text_num_layers = 0;
+    int32_t text_num_heads = 0;
+    int32_t text_max_pos = 0;
+    int32_t unet_in_channels = 0;
+    int32_t unet_out_channels = 0;
+    int32_t unet_sample_size = 0;
+    int32_t vae_in_channels = 0;
+    int32_t vae_latent_channels = 0;
+    float   vae_scaling_factor = 0.18215f;
+    std::string sched_prediction_type;
+    int32_t bos_id = -1;
+    int32_t eos_id = -1;
+    int32_t unk_id = -1;
+    int32_t pad_id = -1;
+};
+
+SDXLProfile load_or_build_profile(const std::string & model_dir);
+SDXLProfile load_profile_json(const std::string & json_path);
+size_t estimate_memory_requirements(const SDXLProfile & profile);
 
 static bool read_json(const std::string & path, SDXLProfile & p) {
     try {
@@ -91,7 +155,7 @@ SDXLProfile load_or_build_profile(const std::string & model_dir) {
     TextEncoder te = TextEncoder::from_file(p.text_path);
     UNet       un = UNet::from_file(p.unet_path);
     VAE         v = VAE::from_file(p.vae_path);
-    Model um = un.model();
+    const Model & um = un.model();
 
     p.text_hidden_size = te.config().hidden_size;
     p.text_num_layers  = te.config().num_layers;
@@ -175,6 +239,15 @@ SDXLProfile load_profile_json(const std::string & json_path) {
     return p;
 }
 
+size_t estimate_memory_requirements(const SDXLProfile & p) {
+    size_t base = 512ull * 1024ull * 1024ull;
+    size_t text = (size_t)p.text_hidden_size * (size_t)std::max(1, p.text_num_layers) * (size_t)std::max(1, p.text_num_heads) * 8ull;
+    size_t unet = (size_t)std::max(1, p.unet_in_channels) * (size_t)std::max(1, p.unet_out_channels) * 
+    (size_t)std::max(1, p.unet_sample_size) * (size_t)std::max(1, p.unet_sample_size) / 4ull;
+    size_t vae = (size_t)std::max(1, p.vae_in_channels) * (size_t)std::max(1, p.vae_latent_channels) * 4ull * 4ull;
+    size_t total = base + text + unet + vae;
+    size_t align = 16ull * 1024ull * 1024ull;
+    return ((total + align - 1) / align) * align;
 }
 
-
+}
