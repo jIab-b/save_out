@@ -95,11 +95,9 @@ ggml_tensor * TextEncoder::forward(ggml_context * ctx, ggml_tensor * token_ids) 
     ggml_tensor * tok_emb = build_embeddings(ctx, token_ids);
     ggml_tensor * pos_w_src = find_position_embedding();
     if (pos_w_src) {
-        // build positions and add positional embedding without copying weights
-        ggml_tensor * positions = ggml_new_i32(ctx, 0);
-        // create a positions buffer 0..N-1
-        positions = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, token_ids->ne[0]);
-        // values will be filled by caller after allocation if needed; safe default handled by add
+        // positions: 0..N-1 via arange + cast to i32
+        ggml_tensor * positions_f = ggml_arange(ctx, 0.0f, (float) token_ids->ne[0], 1.0f);
+        ggml_tensor * positions   = ggml_cast(ctx, positions_f, GGML_TYPE_I32);
         ggml_tensor * pos_emb = ggml_get_rows(ctx, pos_w_src, positions);
         tok_emb = ggml_add(ctx, tok_emb, pos_emb);
     }

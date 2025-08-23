@@ -1,6 +1,8 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
 
 #include <stdexcept>
 #include <cstring>
@@ -34,6 +36,8 @@ public:
 private:
     Model m;
     UNetConfig cfg;
+    ggml_tensor * k_in_cached = nullptr;
+    ggml_tensor * k_out_cached = nullptr;
 };
 
 const Model & UNet::model() const { return m; }
@@ -52,6 +56,29 @@ UNet UNet::from_file(const std::string & path) {
     u.cfg.in_channels = get_i(u.m, "diffusion.unet.in_channels", 0);
     u.cfg.out_channels = get_i(u.m, "diffusion.unet.out_channels", 0);
     u.cfg.sample_size = get_i(u.m, "diffusion.unet.sample_size", 0);
+    // cache permuted weights once if available
+    auto w_in_it  = u.m.tensors.find("conv_in.weight");
+    auto w_out_it = u.m.tensors.find("conv_out.weight");
+    if (w_in_it != u.m.tensors.end() && w_out_it != u.m.tensors.end()) {
+        ggml_init_params ip_build { 0, nullptr, true };
+        ggml_context * ctx_build = ggml_init(ip_build);
+        ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_cpu_buffer_type());
+        ggml_tensor * k_in  = ggml_permute(ctx_build, w_in_it->second, 3, 2, 1, 0);
+        ggml_tensor * k_out = ggml_permute(ctx_build, w_out_it->second, 3, 2, 1, 0);
+        ggml_set_output(k_in);
+        ggml_set_output(k_out);
+        ggml_cgraph * gf = ggml_new_graph(ctx_build);
+        ggml_build_forward_expand(gf, k_in);
+        ggml_build_forward_expand(gf, k_out);
+        ggml_gallocr_alloc_graph(galloc, gf);
+        ggml_graph_compute_with_ctx(ctx_build, gf, 1);
+        u.k_in_cached  = ggml_dup_tensor(u.m.ctx, k_in);
+        u.k_out_cached = ggml_dup_tensor(u.m.ctx, k_out);
+        std::memcpy(u.k_in_cached->data,  k_in->data,  ggml_nbytes(k_in));
+        std::memcpy(u.k_out_cached->data, k_out->data, ggml_nbytes(k_out));
+        ggml_gallocr_free(galloc);
+        ggml_free(ctx_build);
+    }
     return u;
 }
 
@@ -72,9 +99,9 @@ ggml_tensor * UNet::predict_noise(ggml_context * ctx,
     ggml_tensor * w_out_src = w_out_it->second;
     ggml_tensor * b_out_src = b_out_it->second;
 
-    // permute weights for convolution if required
-    ggml_tensor * k_in  = ggml_permute(ctx, w_in_src, 3, 2, 1, 0);
-    ggml_tensor * k_out = ggml_permute(ctx, w_out_src, 3, 2, 1, 0);
+    // use cached permuted kernels if available, else permute on the fly
+    ggml_tensor * k_in  = k_in_cached  ? k_in_cached  : ggml_permute(ctx, w_in_src, 3, 2, 1, 0);
+    ggml_tensor * k_out = k_out_cached ? k_out_cached : ggml_permute(ctx, w_out_src, 3, 2, 1, 0);
 
     ggml_tensor * cur = ggml_conv_2d_s1_ph(ctx, k_in, latents);
     cur = ggml_add(ctx, cur, b_in_src);

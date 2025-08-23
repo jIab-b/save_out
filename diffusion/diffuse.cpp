@@ -118,7 +118,7 @@ static ggml_tensor * build_text_ctx(ggml_context * ctx_build, const sd::SDXLProf
 
 static ggml_tensor * build_unet_step(ggml_context * ctx_build, const UNet & unet, const DiffusionScheduler & sched,
                                      ggml_tensor * latents_in, ggml_tensor * text_ctx, int step_index) {
-    ggml_tensor * tstep = ggml_new_tensor_1d(ctx_build, GGML_TYPE_I32, 1);
+    ggml_tensor * tstep = ggml_new_i32(ctx_build, step_index);
     ggml_tensor * noise_pred = unet.predict_noise(ctx_build, latents_in, tstep, text_ctx);
     ggml_tensor * latents_next = sched.step(ctx_build, latents_in, noise_pred, step_index);
     return latents_next;
