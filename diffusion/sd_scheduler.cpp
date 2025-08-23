@@ -1,19 +1,13 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
+#include "sd_model.h"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace sd {
-
-struct Model {
-    ggml_context * ctx = nullptr;
-    gguf_context * uf = nullptr;
-    std::unordered_map<std::string, ggml_tensor *> tensors;
-    std::unordered_map<std::string, std::string> kv;
-};
 
 struct SchedulerConfig {
     std::string prediction_type;

@@ -1,21 +1,24 @@
-#include "ggml.h"
-#include "gguf.h"
+#include "sd_model.h"
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 
 namespace sd {
 
-struct Model {
-    ggml_context * ctx = nullptr;
-    gguf_context * uf = nullptr;
-    std::unordered_map<std::string, ggml_tensor *> tensors;
-    std::unordered_map<std::string, std::string> kv;
+Model::Model() = default;
 
-    Model() = default;
-    Model(const Model &) = delete;
-    Model & operator=(const Model &) = delete;
-    Model(Model && other) noexcept {
+Model::Model(Model && other) noexcept {
+    ctx = other.ctx;
+    uf = other.uf;
+    tensors = std::move(other.tensors);
+    kv = std::move(other.kv);
+    other.ctx = nullptr;
+    other.uf = nullptr;
+}
+
+Model & Model::operator=(Model && other) noexcept {
+    if (this != &other) {
+        release();
         ctx = other.ctx;
         uf = other.uf;
         tensors = std::move(other.tensors);
@@ -23,33 +26,23 @@ struct Model {
         other.ctx = nullptr;
         other.uf = nullptr;
     }
-    Model & operator=(Model && other) noexcept {
-        if (this != &other) {
-            release();
-            ctx = other.ctx;
-            uf = other.uf;
-            tensors = std::move(other.tensors);
-            kv = std::move(other.kv);
-            other.ctx = nullptr;
-            other.uf = nullptr;
-        }
-        return *this;
-    }
-    ~Model() { release(); }
+    return *this;
+}
 
-    void release() {
-        if (uf) {
-            gguf_free(uf);
-            uf = nullptr;
-        }
-        if (ctx) {
-            ggml_free(ctx);
-            ctx = nullptr;
-        }
-        tensors.clear();
-        kv.clear();
+Model::~Model() { release(); }
+
+void Model::release() {
+    if (uf) {
+        gguf_free(uf);
+        uf = nullptr;
     }
-};
+    if (ctx) {
+        ggml_free(ctx);
+        ctx = nullptr;
+    }
+    tensors.clear();
+    kv.clear();
+}
 
 static std::string kv_to_str(const gguf_context * uf, int i) {
     const gguf_type type = gguf_get_kv_type(uf, i);

@@ -1,5 +1,7 @@
 #include "ggml.h"
 #include "gguf.h"
+#include "sd_profile.h"
+#include "sd_model.h"
 
 #include <filesystem>
 #include <fstream>
@@ -10,15 +12,6 @@
 namespace fs = std::filesystem;
 
 namespace sd {
-
-struct Model {
-    ggml_context * ctx = nullptr;
-    gguf_context * uf = nullptr;
-    std::unordered_map<std::string, ggml_tensor *> tensors;
-    std::unordered_map<std::string, std::string> kv;
-};
-
-Model load(const std::string & path);
 
 struct TextEncoderConfig { int32_t hidden_size=0,num_layers=0,num_heads=0,max_position_embeddings=0; };
 class TextEncoder {
@@ -50,40 +43,7 @@ public:
     const Model & model() const { return m; }
 private: Model m; VAEConfig cfg; };
 
-struct SDXLProfile {
-    std::string dir;
-    std::string text_path;
-    std::string text2_path;
-    std::string unet_path;
-    std::string vae_path;
-    int32_t text_hidden_size = 0;
-    int32_t text_num_layers = 0;
-    int32_t text_num_heads = 0;
-    int32_t text_max_pos = 0;
-    int32_t text2_hidden_size = 0;
-    int32_t text2_num_layers = 0;
-    int32_t text2_num_heads = 0;
-    int32_t text2_max_pos = 0;
-    int32_t unet_in_channels = 0;
-    int32_t unet_out_channels = 0;
-    int32_t unet_sample_size = 0;
-    int32_t vae_in_channels = 0;
-    int32_t vae_latent_channels = 0;
-    float   vae_scaling_factor = 0.18215f;
-    std::string sched_prediction_type;
-    int32_t bos_id = -1;
-    int32_t eos_id = -1;
-    int32_t unk_id = -1;
-    int32_t pad_id = -1;
-    int32_t text2_bos_id = -1;
-    int32_t text2_eos_id = -1;
-    int32_t text2_unk_id = -1;
-    int32_t text2_pad_id = -1;
-};
-
-SDXLProfile load_or_build_profile(const std::string & model_dir);
-SDXLProfile load_profile_json(const std::string & json_path);
-size_t estimate_memory_requirements(const SDXLProfile & profile);
+// declarations moved to header
 
 static bool read_json(const std::string & path, SDXLProfile & p) {
     try {

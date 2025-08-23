@@ -3,18 +3,12 @@
 #include "gguf.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+#include "sd_model.h"
 #include <cstring>
 #include <string>
 #include <unordered_map>
 
 namespace sd {
-
-struct Model {
-    ggml_context * ctx = nullptr;
-    gguf_context * uf = nullptr;
-    std::unordered_map<std::string, ggml_tensor *> tensors;
-    std::unordered_map<std::string, std::string> kv;
-};
 
 struct VAEConfig {
     int32_t in_channels = 0;

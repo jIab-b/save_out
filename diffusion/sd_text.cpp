@@ -1,6 +1,9 @@
+// Implementation of TextEncoder declared in sd_text.h
 #include "ggml.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
+#include "sd_model.h"
+#include "sd_text.h"
 
 #include <stdexcept>
 #include <cstring>
@@ -9,53 +12,6 @@
 #include <cmath>
 
 namespace sd {
-
-struct Model {
-    ggml_context * ctx = nullptr;
-    gguf_context * uf = nullptr;
-    std::unordered_map<std::string, ggml_tensor *> tensors;
-    std::unordered_map<std::string, std::string> kv;
-};
-
-Model load(const std::string & path);
-
-struct TextEncoderConfig {
-    int32_t hidden_size = 0;
-    int32_t num_layers = 0;
-    int32_t num_heads = 0;
-    int32_t max_position_embeddings = 0;
-    float   layer_norm_eps = 1e-5f;
-};
-
-class TextEncoder {
-public:
-    static TextEncoder from_file(const std::string & path);
-
-    ggml_tensor * build_embeddings(ggml_context * ctx, ggml_tensor * token_ids) const;
-    ggml_tensor * forward(ggml_context * ctx, ggml_tensor * token_ids) const;
-
-    const TextEncoderConfig & config() const;
-    const Model & model() const;
-
-    ggml_tensor * find_text_projection() const; // optional (present in text2)
-
-private:
-    Model m;
-    TextEncoderConfig cfg;
-
-    ggml_tensor * find_token_embedding() const;
-    ggml_tensor * find_position_embedding() const;
-    ggml_tensor * find_final_ln_weight() const;
-    ggml_tensor * find_final_ln_bias() const;
-    static int32_t get_int_kv(const Model & m, const std::string & key, int32_t def);
-    static float   get_float_kv(const Model & m, const std::string & key, float def);
-    static std::string get_str_kv(const Model & m, const std::string & key, const std::string & def);
-    ggml_tensor * get(const std::string & name) const {
-        auto it = m.tensors.find(name);
-        if (it == m.tensors.end()) throw std::runtime_error("missing tensor: " + name);
-        return it->second;
-    }
-};
 
 const TextEncoderConfig & TextEncoder::config() const { return cfg; }
 const Model & TextEncoder::model() const { return m; }
@@ -135,6 +91,13 @@ ggml_tensor * TextEncoder::build_embeddings(ggml_context * ctx, ggml_tensor * to
 }
 
 ggml_tensor * TextEncoder::forward(ggml_context * ctx, ggml_tensor * token_ids) const {
+    // Delegate to forward_all to keep a single implementation
+    auto outs = forward_all(ctx, token_ids);
+    return outs.last_hidden_state;
+}
+
+TextEncoder::Outputs TextEncoder::forward_all(ggml_context * ctx, ggml_tensor * token_ids) const {
+    Outputs outs;
     ggml_tensor * cur = build_embeddings(ctx, token_ids);
     ggml_tensor * pos_w_src = find_position_embedding();
     if (pos_w_src) {
@@ -232,7 +195,24 @@ ggml_tensor * TextEncoder::forward(ggml_context * ctx, ggml_tensor * token_ids) 
         ggml_tensor * scaled = ggml_mul(ctx, normed, ln_w);
         cur = ggml_add(ctx, scaled, ln_b);
     }
-    return cur;
+    outs.last_hidden_state = cur;
+
+    // pooled output: use last token (CLIP uses EOT; our tokenizer appends EOS at end)
+    {
+        int64_t T = cur->ne[1];
+        const size_t off = (T > 0 ? (T - 1) : 0) * cur->nb[1];
+        ggml_tensor * col_last = ggml_view_2d(ctx, cur, cur->ne[0] /*C*/, 1 /*one token*/, cur->nb[1], off);
+        outs.pooled_output = col_last; // shape [C,1]
+    }
+
+    // optional projection (present in text2 encoders)
+    if (auto * proj = find_text_projection()) {
+        outs.pooled_projected = ggml_mul_mat(ctx, proj, outs.pooled_output);
+    }
+
+    return outs;
 }
+
+size_t textencoder_sizeof() { return sizeof(TextEncoder); }
 
 }
