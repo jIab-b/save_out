@@ -105,3 +105,5 @@ add_executable(diffuse diffusion/diffuse.cpp)
 target_include_directories(diffuse PUBLIC include src diffusion ggml/include)
 target_link_libraries(diffuse PUBLIC diffusion_core)
 target_link_options(diffuse PRIVATE -rdynamic)
+
+# Text inspector for tests

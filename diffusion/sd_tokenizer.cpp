@@ -7,6 +7,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <regex>
+#include <cstdint>
+#include <climits>
 
 namespace sd {
 
@@ -30,6 +33,9 @@ private:
     std::unordered_map<std::string, int32_t> merge_ranks;
     int32_t id_bos = -1, id_eos = -1, id_unk = -1, id_pad = -1;
     static int32_t get_int_kv(const Model & m, const std::string & key, int32_t def);
+    // helpers
+    static std::string bytes_to_unicode(const std::string & s);
+    static std::vector<std::string> clip_pretok(const std::string & text);
 };
 
 int32_t Tokenizer::get_int_kv(const Model & m, const std::string & key, int32_t def) {
@@ -68,20 +74,25 @@ Tokenizer Tokenizer::from_text_model(const Model & m) {
 std::vector<int32_t> Tokenizer::encode(const std::string & text, bool add_special) const {
     auto get_pairs = [](const std::vector<std::string> & tokens) {
         std::set<std::pair<std::string, std::string>> pairs;
-        for (size_t i = 0; i + 1 < tokens.size(); ++i) {
-            pairs.insert({tokens[i], tokens[i+1]});
-        }
+        for (size_t i = 0; i + 1 < tokens.size(); ++i) pairs.insert({tokens[i], tokens[i+1]});
         return pairs;
     };
-
     auto bpe = [&](const std::string & token) {
+        // token is already byte-encoded unicode string
+        if (merge_ranks.empty()) return std::vector<std::string>{token};
         std::vector<std::string> word;
         word.reserve(token.size());
-        for (unsigned char c : token) word.emplace_back(std::string(1, (char)c));
+        // split into unicode characters
+        for (size_t i = 0; i < token.size(); ) {
+            unsigned char c = (unsigned char)token[i];
+            // treat as single byte char
+            word.emplace_back(token.substr(i, 1));
+            i += 1;
+        }
         if (word.empty()) return word;
         while (true) {
             auto pairs = get_pairs(word);
-            int best_rank = INT32_MAX;
+            int best_rank = INT_MAX;
             std::pair<std::string,std::string> best_pair;
             for (const auto & p : pairs) {
                 auto it = merge_ranks.find(p.first + " " + p.second);
@@ -90,7 +101,7 @@ std::vector<int32_t> Tokenizer::encode(const std::string & text, bool add_specia
                     best_pair = p;
                 }
             }
-            if (best_rank == INT32_MAX) break;
+            if (best_rank == INT_MAX) break;
             std::vector<std::string> new_word;
             new_word.reserve(word.size());
             for (size_t i = 0; i < word.size(); ) {
@@ -109,20 +120,74 @@ std::vector<int32_t> Tokenizer::encode(const std::string & text, bool add_specia
 
     std::vector<int32_t> out;
     if (add_special && id_bos >= 0) out.push_back(id_bos);
-    std::istringstream iss(text);
-    std::string tok;
-    while (iss >> tok) {
-        auto chunks = bpe(tok);
+    // CLIP regex-based pre-tokenization
+    static const std::regex pat(
+        "'s|'t|'re|'ve|'m|'ll|'d| ?[A-Za-z]+| ?\\d+| ?[^A-Za-z0-9\\s]+|\\s+(?!\\S)|\\s+",
+        std::regex::optimize);
+    std::string bt = bytes_to_unicode(text);
+    auto words_begin = std::sregex_iterator(bt.begin(), bt.end(), pat);
+    auto words_end = std::sregex_iterator();
+    for (auto it = words_begin; it != words_end; ++it) {
+        std::string w = it->str();
+        // BPE over the unicode-escaped bytes
+        auto chunks = bpe(w);
         for (const auto & ch : chunks) {
-            auto it = token_to_id.find(ch);
-            if (it != token_to_id.end()) {
-                out.push_back(it->second);
+            auto jt = token_to_id.find(ch);
+            if (jt != token_to_id.end()) {
+                out.push_back(jt->second);
             } else if (id_unk >= 0) {
                 out.push_back(id_unk);
             }
         }
     }
     if (add_special && id_eos >= 0) out.push_back(id_eos);
+    return out;
+}
+
+// Map bytes 0..255 to a set of printable unicode chars (GPT-2/CLIP scheme)
+std::string Tokenizer::bytes_to_unicode(const std::string & s) {
+    static std::vector<unsigned> bs;
+    static std::vector<unsigned> cs;
+    static bool init = false;
+    if (!init) {
+        // Following OpenAI's byte encoder approach
+        for (unsigned i = 33; i <= 126; ++i) bs.push_back(i);
+        for (unsigned i = 161; i <= 172; ++i) bs.push_back(i);
+        for (unsigned i = 174; i <= 255; ++i) bs.push_back(i);
+        cs = bs;
+        unsigned n = 0;
+        for (unsigned b = 0; b < 256; ++b) {
+            if (std::find(bs.begin(), bs.end(), b) == bs.end()) {
+                bs.push_back(b);
+                cs.push_back(256 + n);
+                ++n;
+            }
+        }
+        init = true;
+    }
+    std::unordered_map<unsigned,unsigned> map;
+    map.reserve(bs.size());
+    for (size_t i = 0; i < bs.size(); ++i) map[bs[i]] = cs[i];
+    std::string out;
+    out.reserve(s.size()*2);
+    for (unsigned char c : s) {
+        unsigned m = map[(unsigned)c];
+        // Encode as UTF-8 for codepoint m
+        if (m <= 0x7F) out.push_back((char)m);
+        else if (m <= 0x7FF) {
+            out.push_back((char)(0xC0 | ((m >> 6) & 0x1F)));
+            out.push_back((char)(0x80 | (m & 0x3F)));
+        } else if (m <= 0xFFFF) {
+            out.push_back((char)(0xE0 | ((m >> 12) & 0x0F)));
+            out.push_back((char)(0x80 | ((m >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (m & 0x3F)));
+        } else {
+            out.push_back((char)(0xF0 | ((m >> 18) & 0x07)));
+            out.push_back((char)(0x80 | ((m >> 12) & 0x3F)));
+            out.push_back((char)(0x80 | ((m >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (m & 0x3F)));
+        }
+    }
     return out;
 }
 

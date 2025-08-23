@@ -76,12 +76,17 @@ namespace sd {
     struct SDXLProfile {
         std::string dir;
         std::string text_path;
+        std::string text2_path;
         std::string unet_path;
         std::string vae_path;
         int32_t text_hidden_size = 0;
         int32_t text_num_layers = 0;
         int32_t text_num_heads = 0;
         int32_t text_max_pos = 0;
+        int32_t text2_hidden_size = 0;
+        int32_t text2_num_layers = 0;
+        int32_t text2_num_heads = 0;
+        int32_t text2_max_pos = 0;
         int32_t unet_in_channels = 0;
         int32_t unet_out_channels = 0;
         int32_t unet_sample_size = 0;
@@ -93,6 +98,10 @@ namespace sd {
         int32_t eos_id = -1;
         int32_t unk_id = -1;
         int32_t pad_id = -1;
+        int32_t text2_bos_id = -1;
+        int32_t text2_eos_id = -1;
+        int32_t text2_unk_id = -1;
+        int32_t text2_pad_id = -1;
     };
     SDXLProfile load_or_build_profile(const std::string & model_dir);
     SDXLProfile load_profile_json(const std::string & json_path);
@@ -167,30 +176,57 @@ int main(int argc, char ** argv) {
 
     // Load models
     TextEncoder text = TextEncoder::from_file(text_path);
+    bool has_text2 = !prof.text2_path.empty();
+    TextEncoder text2;
+    if (has_text2) {
+        text2 = TextEncoder::from_file(prof.text2_path);
+    }
     UNet unet = UNet::from_file(unet_path);
     VAE vae = VAE::from_file(vae_path);
     DiffusionScheduler sched = DiffusionScheduler::from_model_kv(unet.model());
     sched.set_num_inference_steps(steps);
 
-    // Build + compute text context, then persist
+    // Build + compute text context(s), then persist
     ggml_tensor * text_ids = nullptr;
     ggml_tensor * text_node = nullptr;
+    ggml_tensor * text2_ids = nullptr;
+    ggml_tensor * text2_node = nullptr;
     {
         Tokenizer tok = Tokenizer::from_text_model(text.model());
         std::vector<int32_t> ids_vec = tok.encode(prompt, true);
         text_ids = ggml_new_tensor_1d(ctx_build, GGML_TYPE_I32, ids_vec.size());
         text_node = text.forward(ctx_build, text_ids);
         ggml_set_output(text_node);
+        if (has_text2) {
+            Tokenizer tok2 = Tokenizer::from_text_model(text2.model());
+            std::vector<int32_t> ids_vec2 = tok2.encode(prompt, true);
+            text2_ids = ggml_new_tensor_1d(ctx_build, GGML_TYPE_I32, ids_vec2.size());
+            text2_node = text2.forward(ctx_build, text2_ids);
+            ggml_set_output(text2_node);
+            // build a joint graph for both sequences
+        }
         ggml_cgraph * gf = ggml_new_graph(ctx_build);
         ggml_build_forward_expand(gf, text_node);
+        if (has_text2) ggml_build_forward_expand(gf, text2_node);
         ggml_gallocr_alloc_graph(galloc, gf);
         // fill ids
         int32_t * ids = (int32_t *) text_ids->data;
         for (size_t i = 0; i < ids_vec.size(); ++i) ids[i] = ids_vec[i];
+        if (has_text2) {
+            Tokenizer tok2 = Tokenizer::from_text_model(text2.model());
+            std::vector<int32_t> ids_vec2 = tok2.encode(prompt, true);
+            int32_t * ids2 = (int32_t *) text2_ids->data;
+            for (size_t i = 0; i < ids_vec2.size(); ++i) ids2[i] = ids_vec2[i];
+        }
         ggml_graph_compute_with_ctx(ctx_build, gf, 1);
     }
     ggml_tensor * text_ctx_buf = ggml_dup_tensor(ctx_persist, text_node);
     std::memcpy(text_ctx_buf->data, text_node->data, ggml_nbytes(text_node));
+    ggml_tensor * text2_ctx_buf = nullptr;
+    if (has_text2 && text2_node) {
+        text2_ctx_buf = ggml_dup_tensor(ctx_persist, text2_node);
+        std::memcpy(text2_ctx_buf->data, text2_node->data, ggml_nbytes(text2_node));
+    }
     // reset build context
     ggml_free(ctx_build);
     ctx_build = ggml_init(ip_build);

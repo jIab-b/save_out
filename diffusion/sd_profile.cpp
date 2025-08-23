@@ -53,12 +53,17 @@ private: Model m; VAEConfig cfg; };
 struct SDXLProfile {
     std::string dir;
     std::string text_path;
+    std::string text2_path;
     std::string unet_path;
     std::string vae_path;
     int32_t text_hidden_size = 0;
     int32_t text_num_layers = 0;
     int32_t text_num_heads = 0;
     int32_t text_max_pos = 0;
+    int32_t text2_hidden_size = 0;
+    int32_t text2_num_layers = 0;
+    int32_t text2_num_heads = 0;
+    int32_t text2_max_pos = 0;
     int32_t unet_in_channels = 0;
     int32_t unet_out_channels = 0;
     int32_t unet_sample_size = 0;
@@ -70,6 +75,10 @@ struct SDXLProfile {
     int32_t eos_id = -1;
     int32_t unk_id = -1;
     int32_t pad_id = -1;
+    int32_t text2_bos_id = -1;
+    int32_t text2_eos_id = -1;
+    int32_t text2_unk_id = -1;
+    int32_t text2_pad_id = -1;
 };
 
 SDXLProfile load_or_build_profile(const std::string & model_dir);
@@ -100,11 +109,16 @@ static bool read_json(const std::string & path, SDXLProfile & p) {
         p.text_path  = stripq(get("text_path"));
         p.unet_path  = stripq(get("unet_path"));
         p.vae_path   = stripq(get("vae_path"));
+        p.text2_path = stripq(get("text2_path"));
         p.sched_prediction_type = stripq(get("sched_prediction_type"));
         p.text_hidden_size   = std::stoi(get("text_hidden_size"));
         p.text_num_layers    = std::stoi(get("text_num_layers"));
         p.text_num_heads     = std::stoi(get("text_num_heads"));
         p.text_max_pos       = std::stoi(get("text_max_pos"));
+        p.text2_hidden_size   = std::stoi(get("text2_hidden_size"));
+        p.text2_num_layers    = std::stoi(get("text2_num_layers"));
+        p.text2_num_heads     = std::stoi(get("text2_num_heads"));
+        p.text2_max_pos       = std::stoi(get("text2_max_pos"));
         p.unet_in_channels   = std::stoi(get("unet_in_channels"));
         p.unet_out_channels  = std::stoi(get("unet_out_channels"));
         p.unet_sample_size   = std::stoi(get("unet_sample_size"));
@@ -115,6 +129,12 @@ static bool read_json(const std::string & path, SDXLProfile & p) {
         p.eos_id = std::stoi(get("eos_id"));
         p.unk_id = std::stoi(get("unk_id"));
         p.pad_id = std::stoi(get("pad_id"));
+        // optional text2 ids if present
+        auto get_opt_int = [&](const char * k){ std::string v = get(k); if (v.empty()) return -1; try { return std::stoi(v);} catch (...) {return -1;}};
+        p.text2_bos_id = get_opt_int("text2_bos_id");
+        p.text2_eos_id = get_opt_int("text2_eos_id");
+        p.text2_unk_id = get_opt_int("text2_unk_id");
+        p.text2_pad_id = get_opt_int("text2_pad_id");
         return true;
     } catch (...) { return false; }
 }
@@ -151,6 +171,8 @@ SDXLProfile load_or_build_profile(const std::string & model_dir) {
     p.text_path = (fs::path(model_dir) / "text_encoder.gguf").string();
     p.unet_path = (fs::path(model_dir) / "unet.gguf").string();
     p.vae_path  = (fs::path(model_dir) / "vae.gguf").string();
+    const std::string text2_cand = (fs::path(model_dir) / "text_encoder2.gguf").string();
+    if (fs::exists(text2_cand)) p.text2_path = text2_cand;
 
     TextEncoder te = TextEncoder::from_file(p.text_path);
     UNet       un = UNet::from_file(p.unet_path);
@@ -170,12 +192,24 @@ SDXLProfile load_or_build_profile(const std::string & model_dir) {
     auto it = um.kv.find("diffusion.scheduler.prediction_type");
     if (it != um.kv.end()) p.sched_prediction_type = it->second;
 
-    // token ids
+    // token ids (text1)
     auto get_int = [&](const Model & m, const char * k, int def){ auto it = m.kv.find(k); if (it==m.kv.end()) return def; try { return std::stoi(it->second);} catch (...) {return def;}};
     p.bos_id = get_int(te.model(), "tokenizer.ggml.bos_token_id", -1);
     p.eos_id = get_int(te.model(), "tokenizer.ggml.eos_token_id", -1);
     p.unk_id = get_int(te.model(), "tokenizer.ggml.unknown_token_id", -1);
     p.pad_id = get_int(te.model(), "tokenizer.ggml.padding_token_id", -1);
+    // optional text2 metadata
+    if (!p.text2_path.empty()) {
+        TextEncoder te2 = TextEncoder::from_file(p.text2_path);
+        p.text2_hidden_size = te2.config().hidden_size;
+        p.text2_num_layers  = te2.config().num_layers;
+        p.text2_num_heads   = te2.config().num_heads;
+        p.text2_max_pos     = te2.config().max_position_embeddings;
+        p.text2_bos_id = get_int(te2.model(), "tokenizer.ggml.bos_token_id", -1);
+        p.text2_eos_id = get_int(te2.model(), "tokenizer.ggml.eos_token_id", -1);
+        p.text2_unk_id = get_int(te2.model(), "tokenizer.ggml.unknown_token_id", -1);
+        p.text2_pad_id = get_int(te2.model(), "tokenizer.ggml.padding_token_id", -1);
+    }
 
     write_json(cache, p);
     return p;
